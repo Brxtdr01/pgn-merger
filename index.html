@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PGN Merger</title>
+<style>
+:root{color-scheme:dark;--bg:#101319;--panel:#191f29;--panel2:#202837;--line:#303b4c;--text:#edf0f5;--muted:#9ba7b8;--gold:#e2b45b;--green:#7bc89b}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#202838 0,#101319 55%);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:1180px;margin:auto;padding:34px 22px 60px}.top{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:26px}
+h1{font-size:clamp(28px,5vw,42px);letter-spacing:.08em;margin:0;color:var(--gold)}.sub{color:var(--muted);margin-top:4px}
+.pill{border:1px solid #49604f;color:var(--green);border-radius:999px;padding:5px 11px;font-size:12px;white-space:nowrap}
+.grid{display:grid;grid-template-columns: minmax(290px,.85fr) minmax(0,1.5fr);gap:18px}
+.card{background:rgba(25,31,41,.94);border:1px solid var(--line);border-radius:15px;padding:19px;box-shadow:0 12px 35px #0003}
+h2{font-size:17px;margin:0 0 13px}p.help{color:var(--muted);font-size:13px;margin:0 0 15px}
+button,.filelabel{border:1px solid #465367;background:var(--panel2);color:var(--text);padding:10px 13px;border-radius:9px;cursor:pointer;font:inherit}
+button:hover,.filelabel:hover{border-color:var(--gold)}button.primary{background:var(--gold);color:#171717;border-color:var(--gold);font-weight:700}button:disabled{opacity:.4;cursor:not-allowed}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}.filelabel input{display:none}
+#fileList{list-style:none;margin:0;padding:0;display:grid;gap:8px;max-height:390px;overflow:auto}
+#fileList li{background:#141922;border:1px solid var(--line);border-radius:9px;padding:10px;display:flex;gap:9px;align-items:flex-start}
+#fileList input{margin-top:5px;accent-color:var(--gold)}.fname{font-weight:600;overflow-wrap:anywhere}.meta{font-size:12px;color:var(--muted)}
+#preview{white-space:pre-wrap;overflow-wrap:anywhere;background:#111720;border:1px solid var(--line);border-radius:10px;padding:15px;min-height:340px;max-height:580px;overflow:auto;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;color:#d9e1ec}
+.status{margin-top:13px;color:var(--muted);font-size:13px;min-height:20px}.foot{color:var(--muted);font-size:12px;margin-top:18px}
+@media(max-width:800px){.grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body><main>
+<header class="top"><div><h1>PGN MERGER</h1><div class="sub">Fusionne plusieurs parties en un seul arbre de variantes.</div></div><span class="pill">100% dans ton navigateur</span></header>
+<div class="grid">
+<section class="card">
+<h2>1. Importer tes PGN</h2>
+<p class="help">Choisis plusieurs fichiers .pgn. Chaque partie trouvée sera ajoutée à la liste.</p>
+<div class="actions">
+<label class="filelabel">＋ Ajouter des PGN<input id="files" type="file" accept=".pgn,text/plain" multiple></label>
+<button id="clear">Tout effacer</button>
+</div>
+<h2>2. Choisir la ligne principale</h2>
+<p class="help">La partie sélectionnée restera la ligne principale du fichier fusionné.</p>
+<ul id="fileList"><li><span class="meta">Aucun fichier importé pour le moment.</span></li></ul>
+<div class="actions" style="margin-top:16px"><button id="merge" class="primary" disabled>Fusionner les parties</button></div>
+<div class="status" id="status">En attente de fichiers PGN.</div>
+</section>
+<section class="card">
+<h2>3. Aperçu et export</h2>
+<p class="help">Vérifie le PGN généré, puis télécharge-le.</p>
+<pre id="preview">Le résultat de la fusion apparaîtra ici.</pre>
+<div class="actions" style="margin-top:14px"><button id="download" disabled>↓ Télécharger merged.pgn</button></div>
+</section>
+</div>
+<p class="foot">Version 0.1 · Les branches sont fusionnées uniquement lorsqu'elles partagent le même chemin de coups. Les transpositions (positions identiques atteintes par des chemins différents) restent séparées. Les fichiers sont traités localement et ne sont pas téléversés.</p>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let games=[], mergedText="";
+const resultTokens=new Set(["1-0","0-1","1/2-1/2","*"]);
+
+function tokenizePGN(text){
+  // Remove comments, NAGs and tag-pair headers; preserve variation parentheses.
+  text=text.replace(/^\s*\[[^\]]*\]\s*$/gm," ");
+  text=text.replace(/\{[^}]*\}/gs," ");
+  text=text.replace(/;[^\r\n]*/g," ");
+  text=text.replace(/\$\d+/g," ");
+  return text.match(/\(|\)|[^\s()]+/g)||[];
+}
+function parseOne(raw,name){
+  const headers={};
+  const body=raw.replace(/^\s*\[([A-Za-z0-9_]+)\s+"((?:\\.|[^"])*)"\s*\]\s*$/gm,(_,k,v)=>{headers[k]=v.replace(/\\"/g,'"').replace(/\\\\/g,'\\');return " ";});
+  const root={san:null,parent:null,children:[]};let cur=root;const stack=[];
+  const toks=tokenizePGN(body);
+  for(let t of toks){
+    if(t==="("){stack.push(cur); if(cur.parent)cur=cur.parent; continue;}
+    if(t===")"){if(stack.length)cur=stack.pop();continue;}
+    if(resultTokens.has(t))continue;
+    if(/^\d+\.(\.\.)?$/.test(t)||/^\d+\.\.\.$/.test(t))continue;
+    // Strip move-number prefixes attached to SAN, e.g. 12...Qd8
+    t=t.replace(/^\d+\.(\.\.)?/,"");
+    if(!t||resultTokens.has(t)||/^\.+$/.test(t))continue;
+    // Ignore standalone clock/evaluation annotations.
+    if(/^\[%/.test(t))continue;
+    let child=cur.children.find(n=>n.san===t);
+    if(!child){child={san:t,parent:cur,children:[]};cur.children.push(child);}
+    cur=child;
+  }
+  return {headers,root,name};
+}
+function splitGames(text,name){
+  // Split at tag-pair starts; also accept a single headerless PGN.
+  const starts=[...text.matchAll(/^\s*(?=\[[A-Za-z0-9_]+\s+")/gm)].map(m=>m.index);
+  if(!starts.length)return [parseOne(text,name)];
+  const chunks=[];
+  for(let i=0;i<starts.length;i++){
+    const end=i+1<starts.length?starts[i+1]:text.length;
+    const chunk=text.slice(starts[i],end).trim();
+    if(chunk)chunks.push(parseOne(chunk,`${name} · partie ${i+1}`));
+  }
+  return chunks;
+}
+function mergeTrees(primary, all){
+  const root={san:null,parent:null,children:[]};
+  function copyInto(src,dst){
+    for(const sc of src.children){
+      let dc=dst.children.find(x=>x.san===sc.san);
+      if(!dc){dc={san:sc.san,parent:dst,children:[]};dst.children.push(dc);}
+      copyInto(sc,dc);
+    }
+  }
+  // Primary first: its first-child path remains the main line.
+  copyInto(primary.root,root);
+  for(const g of all)if(g!==primary)copyInto(g.root,root);
+  return root;
+}
+function movePrefix(ply){const moveNo=Math.floor(ply/2)+1;return ply%2===0?`${moveNo}.`:`${moveNo}...`;}
+function renderTree(root){
+  let out="";
+  function walk(parent,ply,indent){
+    if(!parent.children.length)return;
+    const main=parent.children[0];
+    out+=movePrefix(ply)+" "+main.san+" ";
+    // Alternatives to this move are sibling branches, printed as PGN variations.
+    for(let i=1;i<parent.children.length;i++){
+      const alt=parent.children[i];
+      let branch=movePrefix(ply)+" "+alt.san+" ";
+      branch+=renderFrom(alt,ply+1);
+      out+="("+branch.trim()+") ";
+    }
+    walk(main,ply+1,indent);
+  }
+  function renderFrom(node,ply){
+    let s="";
+    if(!node.children.length)return s;
+    const main=node.children[0];
+    s+=movePrefix(ply)+" "+main.san+" ";
+    for(let i=1;i<node.children.length;i++){
+      const alt=node.children[i];
+      s+="("+movePrefix(ply)+" "+alt.san+" "+renderFrom(alt,ply+1)+") ";
+    }
+    s+=renderFrom(main,ply+1);
+    return s;
+  }
+  walk(root,0,0);
+  return out.trim();
+}
+function headersToText(headers){
+  const h={...headers};
+  if(!h.Event)h.Event="PGN Merger";
+  if(!h.Result)h.Result="*";
+  return Object.entries(h).map(([k,v])=>`[${k} "${String(v).replace(/\\/g,"\\\\").replace(/"/g,'\\"')}"]`).join("\n");
+}
+function refresh(){
+  const list=$("fileList");list.innerHTML="";
+  if(!games.length){list.innerHTML='<li><span class="meta">Aucun fichier importé pour le moment.</span></li>';$("merge").disabled=true;return;}
+  games.forEach((g,i)=>{
+    const li=document.createElement("li");
+    const radio=document.createElement("input");radio.type="radio";radio.name="primary";radio.value=i;radio.checked=i===0;
+    const label=document.createElement("div");label.style.minWidth="0";
+    const title=document.createElement("div");title.className="fname";title.textContent=`${i+1}. ${g.name}`;
+    const meta=document.createElement("div");meta.className="meta";meta.textContent=`${g.headers.White||"Blancs"} – ${g.headers.Black||"Noirs"} · ${countNodes(g.root)} coups enregistrés`;
+    label.append(title,meta);li.append(radio,label);list.append(li);
+  });
+  $("merge").disabled=games.length<2;
+}
+function countNodes(root){let n=0;function rec(x){for(const c of x.children){n++;rec(c)}}rec(root);return n}
+$("files").addEventListener("change",async e=>{
+  let added=0,errors=[];
+  for(const file of e.target.files){
+    try{const text=await file.text();const parsed=splitGames(text,file.name);games.push(...parsed);added+=parsed.length;}
+    catch(err){errors.push(file.name+": "+err.message);}
+  }
+  refresh();$("status").textContent=`${added} partie(s) importée(s).`+(errors.length?" Erreurs : "+errors.join("; "):"");
+  $("preview").textContent="Clique sur « Fusionner les parties » pour générer le PGN.";
+  mergedText="";$("download").disabled=true;e.target.value="";
+});
+$("clear").addEventListener("click",()=>{games=[];mergedText="";refresh();$("preview").textContent="Le résultat de la fusion apparaîtra ici.";$("download").disabled=true;$("status").textContent="Liste vidée."});
+$("merge").addEventListener("click",()=>{
+  if(games.length<2)return;
+  const selected=document.querySelector('input[name="primary"]:checked');
+  const primary=games[Number(selected?.value||0)];
+  const root=mergeTrees(primary,games);
+  const headers=headersToText(primary.headers);
+  const moves=renderTree(root);
+  mergedText=headers+"\n\n"+moves+" "+(primary.headers.Result||"*")+"\n";
+  $("preview").textContent=mergedText;$("download").disabled=false;
+  $("status").textContent=`Fusion terminée : ${games.length} parties réunies. Ligne principale : ${primary.name}.`;
+});
+$("download").addEventListener("click",()=>{
+  if(!mergedText)return;
+  const blob=new Blob([mergedText],{type:"application/x-chess-pgn;charset=utf-8"});
+  const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="merged.pgn";a.click();URL.revokeObjectURL(url);
+});
+refresh();
+</script></body></html>
